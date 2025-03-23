@@ -78,7 +78,7 @@ def generate_key(request: KeyGenerationRequest):
         )
         public_key_b64 = base64.b64encode(public_key_bytes).decode()
 
-        key_store[key_id] = {"type": "RSA", "private_key": private_key_b64, "public_key": public_key_b64}
+        key_store[key_id] = {"type": "RSA", "private_key": private_key , "public_key": public_key}
 
         return {
             "key_id": key_id,
