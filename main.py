@@ -39,6 +39,10 @@ class VerifyHashRequest(BaseModel):
     algorithm: str
 
 # Generate a key (AES or RSA)
+
+# Allowed RSA key sizes
+ALLOWED_RSA_SIZES = {1024, 2048, 3072, 4096, 8192}
+
 @app.post("/generate-key/")
 def generate_key(request: KeyGenerationRequest):
     key_id = str(uuid.uuid4())
@@ -47,20 +51,43 @@ def generate_key(request: KeyGenerationRequest):
         if request.key_size not in [128, 192, 256]:
             return {"message": "Invalid AES key size. Use 128, 192, or 256."}
 
-        key = os.urandom(request.key_size // 8)  # Key length in bytes
+        key = os.urandom(request.key_size // 8)
         key_store[key_id] = {"type": "AES", "key": key}
         return {"key_id": key_id, "key_value": base64.b64encode(key).decode()}
 
     if request.key_type.upper() == "RSA":
+        if request.key_size not in ALLOWED_RSA_SIZES:
+            return {"message": "Invalid RSA key size. Use 1024, 2048, 3072, 4096, or 8192."}
+
         private_key = rsa.generate_private_key(
             public_exponent=65537,
             key_size=request.key_size
         )
         public_key = private_key.public_key()
-        key_store[key_id] = {"type": "RSA", "private_key": private_key, "public_key": public_key}
-        return {"key_id": key_id, "key_value": "RSA Key Pair Generated"}
+
+        private_key_bytes = private_key.private_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()
+        )
+        private_key_b64 = base64.b64encode(private_key_bytes).decode()
+
+        public_key_bytes = public_key.public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        public_key_b64 = base64.b64encode(public_key_bytes).decode()
+
+        key_store[key_id] = {"type": "RSA", "private_key": private_key_b64, "public_key": public_key_b64}
+
+        return {
+            "key_id": key_id,
+            "public_key": public_key_b64,
+            "private_key": private_key_b64
+        }
 
     return {"message": "Invalid key type. Use 'AES' or 'RSA'."}
+
 
 # Encrypt data using AES or RSA
 @app.post("/encrypt/")
