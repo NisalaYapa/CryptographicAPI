@@ -3,6 +3,12 @@ from pydantic import BaseModel
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.ciphers import Cipher
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.padding import PKCS7
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives import hashes
 import hashlib
 import base64
 import uuid
@@ -26,7 +32,7 @@ class EncryptionRequest(BaseModel):
 class DecryptionRequest(BaseModel):
     key_id: str
     ciphertext: str
-    nonce: str
+
     algorithm: str
 
 class HashRequest(BaseModel):
@@ -78,7 +84,7 @@ def generate_key(request: KeyGenerationRequest):
         )
         public_key_b64 = base64.b64encode(public_key_bytes).decode()
 
-        key_store[key_id] = {"type": "RSA", "private_key": private_key , "public_key": public_key}
+        key_store[key_id] = {"type": "RSA", "private_key": private_key, "public_key": public_key}
 
         return {
             "key_id": key_id,
@@ -89,7 +95,7 @@ def generate_key(request: KeyGenerationRequest):
     return {"message": "Invalid key type. Use 'AES' or 'RSA'."}
 
 
-# Encrypt data using AES or RSA
+# Encrypt data using AES (CBC mode) or RSA
 @app.post("/encrypt/")
 def encrypt(request: EncryptionRequest):
     key_data = key_store.get(request.key_id)
@@ -97,13 +103,16 @@ def encrypt(request: EncryptionRequest):
         return {"message": "Key ID not found"}
 
     if request.algorithm.upper() == "AES" and key_data["type"] == "AES":
-        nonce = os.urandom(12)  # 96-bit nonce for AESGCM
-        cipher = AESGCM(key_data["key"])
-        ciphertext = cipher.encrypt(nonce, request.plaintext.encode(), None)
-        return {
-            "ciphertext": base64.b64encode(ciphertext).decode(),
-            "nonce": base64.b64encode(nonce).decode()
-        }
+        iv = os.urandom(16)  # 128-bit IV for AES-CBC
+        cipher = Cipher(algorithms.AES(key_data["key"]), modes.CBC(iv), backend=default_backend())
+        encryptor = cipher.encryptor()
+        
+        padder = PKCS7(algorithms.AES.block_size).padder()
+        padded_data = padder.update(request.plaintext.encode()) + padder.finalize()
+        
+        ciphertext = encryptor.update(padded_data) + encryptor.finalize()
+        
+        return {"ciphertext": base64.b64encode(iv + ciphertext).decode()}
 
     if request.algorithm.upper() == "RSA" and key_data["type"] == "RSA":
         ciphertext = key_data["public_key"].encrypt(
@@ -118,7 +127,7 @@ def encrypt(request: EncryptionRequest):
 
     return {"message": "Invalid encryption algorithm or key type"}
 
-# Decrypt data using AES or RSA
+# Decrypt data using AES (CBC mode) or RSA
 @app.post("/decrypt/")
 def decrypt(request: DecryptionRequest):
     key_data = key_store.get(request.key_id)
@@ -126,10 +135,17 @@ def decrypt(request: DecryptionRequest):
         return {"message": "Key ID not found"}
 
     if request.algorithm.upper() == "AES" and key_data["type"] == "AES":
-        nonce = base64.b64decode(request.nonce)
-        cipher = AESGCM(key_data["key"])
-        decrypted_text = cipher.decrypt(nonce, base64.b64decode(request.ciphertext), None).decode()
-        return {"plaintext": decrypted_text}
+        encrypted_data = base64.b64decode(request.ciphertext)
+        iv, encrypted_text = encrypted_data[:16], encrypted_data[16:]
+
+        cipher = Cipher(algorithms.AES(key_data["key"]), modes.CBC(iv), backend=default_backend())
+        decryptor = cipher.decryptor()
+        decrypted_padded_text = decryptor.update(encrypted_text) + decryptor.finalize()
+
+        unpadder = PKCS7(algorithms.AES.block_size).unpadder()
+        decrypted_text = unpadder.update(decrypted_padded_text) + unpadder.finalize()
+
+        return {"plaintext": decrypted_text.decode()}
 
     if request.algorithm.upper() == "RSA" and key_data["type"] == "RSA":
         decrypted_text = key_data["private_key"].decrypt(
@@ -143,7 +159,6 @@ def decrypt(request: DecryptionRequest):
         return {"plaintext": decrypted_text}
 
     return {"message": "Invalid decryption algorithm or key type"}
-
 # Generate hash
 @app.post("/generate-hash/")
 def generate_hash(request: HashRequest):
