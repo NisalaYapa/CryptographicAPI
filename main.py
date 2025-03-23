@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException
+
+from fastapi import FastAPI
 from pydantic import BaseModel
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
@@ -9,13 +10,13 @@ import uuid
 
 app = FastAPI()
 
-# Storage for keys
+# Dictionary to store generated keys
 key_store = {}
 
-### ====== Request Models ====== ###
+# Request models for API endpoints
 class KeyGenerationRequest(BaseModel):
     key_type: str
-    key_size: int = 256  # Default AES size
+    key_size: int = 256  # Default AES key size
 
 class EncryptionRequest(BaseModel):
     key_id: str
@@ -36,47 +37,40 @@ class VerifyHashRequest(BaseModel):
     hash_value: str
     algorithm: str
 
-
-### ====== Key Generation ====== ###
+# Generate a key (AES or RSA)
 @app.post("/generate-key/")
 def generate_key(request: KeyGenerationRequest):
     key_id = str(uuid.uuid4())
-
+    
     if request.key_type.upper() == "AES":
         key = Fernet.generate_key()
         key_store[key_id] = {"type": "AES", "key": key}
-    elif request.key_type.upper() == "RSA":
+        return {"key_id": key_id, "key_value": base64.b64encode(key).decode()}
+    
+    if request.key_type.upper() == "RSA":
         private_key = rsa.generate_private_key(
             public_exponent=65537,
             key_size=request.key_size
         )
         public_key = private_key.public_key()
+        key_store[key_id] = {"type": "RSA", "private_key": private_key, "public_key": public_key}
+        return {"key_id": key_id, "key_value": "RSA Key Pair Generated"}
+    
+    return {"message": "Invalid key type. Use 'AES' or 'RSA'."}
 
-        key_store[key_id] = {
-            "type": "RSA",
-            "private_key": private_key,
-            "public_key": public_key
-        }
-    else:
-        raise HTTPException(status_code=400, detail="Invalid key type. Use 'AES' or 'RSA'.")
-
-    return {"key_id": key_id, "key_value": base64.b64encode(key).decode() if request.key_type == "AES" else "RSA Key Pair Generated"}
-
-
-### ====== Encryption ====== ###
+# Encrypt data using AES or RSA
 @app.post("/encrypt/")
 def encrypt(request: EncryptionRequest):
-    if request.key_id not in key_store:
-        raise HTTPException(status_code=404, detail="Key ID not found")
-
-    key_data = key_store[request.key_id]
-
+    key_data = key_store.get(request.key_id)
+    if not key_data:
+        return {"message": "Key ID not found"}
+    
     if request.algorithm.upper() == "AES" and key_data["type"] == "AES":
         cipher = Fernet(key_data["key"])
         ciphertext = cipher.encrypt(request.plaintext.encode())
         return {"ciphertext": base64.b64encode(ciphertext).decode()}
     
-    elif request.algorithm.upper() == "RSA" and key_data["type"] == "RSA":
+    if request.algorithm.upper() == "RSA" and key_data["type"] == "RSA":
         ciphertext = key_data["public_key"].encrypt(
             request.plaintext.encode(),
             padding.OAEP(
@@ -87,24 +81,21 @@ def encrypt(request: EncryptionRequest):
         )
         return {"ciphertext": base64.b64encode(ciphertext).decode()}
     
-    else:
-        raise HTTPException(status_code=400, detail="Invalid encryption algorithm or key type")
+    return {"message": "Invalid encryption algorithm or key type"}
 
-
-### ====== Decryption ====== ###
+# Decrypt data using AES or RSA
 @app.post("/decrypt/")
 def decrypt(request: DecryptionRequest):
-    if request.key_id not in key_store:
-        raise HTTPException(status_code=404, detail="Key ID not found")
-
-    key_data = key_store[request.key_id]
-
+    key_data = key_store.get(request.key_id)
+    if not key_data:
+        return {"message": "Key ID not found"}
+    
     if request.algorithm.upper() == "AES" and key_data["type"] == "AES":
         cipher = Fernet(key_data["key"])
         decrypted_text = cipher.decrypt(base64.b64decode(request.ciphertext)).decode()
         return {"plaintext": decrypted_text}
-
-    elif request.algorithm.upper() == "RSA" and key_data["type"] == "RSA":
+    
+    if request.algorithm.upper() == "RSA" and key_data["type"] == "RSA":
         decrypted_text = key_data["private_key"].decrypt(
             base64.b64decode(request.ciphertext),
             padding.OAEP(
@@ -114,12 +105,10 @@ def decrypt(request: DecryptionRequest):
             )
         ).decode()
         return {"plaintext": decrypted_text}
+    
+    return {"message": "Invalid decryption algorithm or key type"}
 
-    else:
-        raise HTTPException(status_code=400, detail="Invalid decryption algorithm or key type")
-
-
-### ====== Hashing ====== ###
+# Generate hash for given data
 @app.post("/generate-hash/")
 def generate_hash(request: HashRequest):
     if request.algorithm.upper() == "SHA-256":
@@ -127,32 +116,24 @@ def generate_hash(request: HashRequest):
     elif request.algorithm.upper() == "SHA-512":
         hash_value = hashlib.sha512(request.data.encode()).digest()
     else:
-        raise HTTPException(status_code=400, detail="Invalid hashing algorithm. Use 'SHA-256' or 'SHA-512'.")
+        return {"message": "Invalid hashing algorithm. Use 'SHA-256' or 'SHA-512'."}
+    
+    return {"hash_value": base64.b64encode(hash_value).decode(), "algorithm": request.algorithm.upper()}
 
-    return {
-        "hash_value": base64.b64encode(hash_value).decode(),
-        "algorithm": request.algorithm.upper()
-    }
-
-
-### ====== Hash Verification ====== ###
+# Verify if given data matches a provided hash
 @app.post("/verify-hash/")
 def verify_hash(request: VerifyHashRequest):
-    computed_hash = None
     if request.algorithm.upper() == "SHA-256":
         computed_hash = hashlib.sha256(request.data.encode()).digest()
     elif request.algorithm.upper() == "SHA-512":
         computed_hash = hashlib.sha512(request.data.encode()).digest()
     else:
-        raise HTTPException(status_code=400, detail="Invalid hashing algorithm. Use 'SHA-256' or 'SHA-512'.")
+        return {"message": "Invalid hashing algorithm. Use 'SHA-256' or 'SHA-512'."}
+    
+    is_valid = base64.b64encode(computed_hash).decode() == request.hash_value
+    return {"is_valid": is_valid, "message": "Hash matches the data." if is_valid else "Hash does not match."}
 
-    return {
-        "is_valid": base64.b64encode(computed_hash).decode() == request.hash_value,
-        "message": "Hash matches the data." if base64.b64encode(computed_hash).decode() == request.hash_value else "Hash does not match."
-    }
-
-
-### ====== Root Endpoint ====== ###
+# Root endpoint
 @app.get("/")
 def home():
     return {"message": "Cryptographic API is running!"}
